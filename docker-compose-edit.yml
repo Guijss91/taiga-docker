@@ -3,24 +3,24 @@ version: "3.5"
 x-environment:
   &default-back-environment
   POSTGRES_DB: "taiga"
-  POSTGRES_USER: "${POSTGRES_USER}"                # Variável de ambiente para usuário PostgreSQL
-  POSTGRES_PASSWORD: "${POSTGRES_PASSWORD}"        # Variável de ambiente para senha PostgreSQL
+  POSTGRES_USER: "${POSTGRES_USER}"
+  POSTGRES_PASSWORD: "${POSTGRES_PASSWORD}"
   POSTGRES_HOST: "taiga-db"
-
-  TAIGA_SECRET_KEY: "${SECRET_KEY}"                # Chave secreta para Taiga
-  TAIGA_SITES_SCHEME: "${TAIGA_SCHEME}"            # Esquema do site (http ou https)
-  TAIGA_SITES_DOMAIN: "${TAIGA_DOMAIN}"            # Domínio do site (ex: localhost)
-
-  EMAIL_BACKEND: "django.core.mail.backends.${EMAIL_BACKEND}.EmailBackend"  # Backend de email
-  DEFAULT_FROM_EMAIL: "${EMAIL_DEFAULT_FROM}"      # Email padrão
-  EMAIL_USE_TLS: "${EMAIL_USE_TLS}"                # Usar TLS?
-  EMAIL_USE_SSL: "${EMAIL_USE_SSL}"                # Usar SSL?
-  EMAIL_HOST: "${EMAIL_HOST}"                      # Servidor de email
-  EMAIL_PORT: "${EMAIL_PORT}"                      # Porta do servidor de email
-  EMAIL_HOST_USER: "${EMAIL_HOST_USER}"            # Usuário do servidor de email
-  EMAIL_HOST_PASSWORD: "${EMAIL_HOST_PASSWORD}"    # Senha do servidor de email
-
-  CELERY_ENABLED: "False"                          # Desabilitar Celery, pois não estamos utilizando RabbitMQ
+  TAIGA_SECRET_KEY: "${SECRET_KEY}"
+  TAIGA_SITES_SCHEME: "${TAIGA_SCHEME}"
+  TAIGA_SITES_DOMAIN: "${TAIGA_DOMAIN}"
+  TAIGA_SUBPATH: "${SUBPATH}"
+  EMAIL_BACKEND: "django.core.mail.backends.${EMAIL_BACKEND}.EmailBackend"
+  DEFAULT_FROM_EMAIL: "${EMAIL_DEFAULT_FROM}"
+  EMAIL_USE_TLS: "${EMAIL_USE_TLS}"
+  EMAIL_USE_SSL: "${EMAIL_USE_SSL}"
+  EMAIL_HOST: "${EMAIL_HOST}"
+  EMAIL_PORT: "${EMAIL_PORT}"
+  EMAIL_HOST_USER: "${EMAIL_HOST_USER}"
+  EMAIL_HOST_PASSWORD: "${EMAIL_HOST_PASSWORD}"
+  RABBITMQ_USER: "${RABBITMQ_USER}"
+  RABBITMQ_PASS: "${RABBITMQ_PASS}"
+  ENABLE_TELEMETRY: "${ENABLE_TELEMETRY}"
 
 x-volumes:
   &default-back-volumes
@@ -28,45 +28,137 @@ x-volumes:
   - taiga-media-data:/taiga-back/media
 
 services:
-  taiga-back:
-    image: taigaio/taiga-back:latest
-    container_name: taiga-back
-    environment: *default-back-environment
-    depends_on:
-      - taiga-db
-    entrypoint: "python manage.py"
-    volumes: *default-back-volumes
-    networks:
-      - taiga
-
-  taiga-frontend:
-    image: taigaio/taiga-frontend:latest
-    container_name: taiga-frontend
-    environment:
-      - TAIGA_BACKEND_URL=http://$(TAIGA_DOMAIN):9000/api/v1/   # URL do backend Taiga
-    depends_on:
-      - taiga-back
-    ports:
-      - "8080:80"
-    networks:
-      - taiga
-
   taiga-db:
-    image: postgres:13
-    container_name: taiga-db
+    image: postgres:12.3
     environment:
-      - POSTGRES_USER=${POSTGRES_USER}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
-      - POSTGRES_DB=taiga
+      POSTGRES_DB: "taiga"
+      POSTGRES_USER: "${POSTGRES_USER}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD}"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      interval: 2s
+      timeout: 15s
+      retries: 5
+      start_period: 3s
     volumes:
       - taiga-db-data:/var/lib/postgresql/data
     networks:
       - taiga
 
-networks:
-  taiga:
+  taiga-back:
+    image: taigaio/taiga-back:latest
+    environment: *default-back-environment
+    volumes: *default-back-volumes
+    networks:
+      - taiga
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.taiga-back.rule=Host(`${TAIGA_DOMAIN}`) && PathPrefix(`/api`, `/admin`, `/static`, `/media`)
+      - traefik.http.routers.taiga-back.entrypoints=web,websecure
+      - traefik.http.routers.taiga-back.tls=true
+      - traefik.http.services.taiga-back.loadbalancer.server.port=8000
+    depends_on:
+      taiga-db:
+        condition: service_healthy
+      taiga-events-rabbitmq:
+        condition: service_started
+      taiga-async-rabbitmq:
+        condition: service_started
+
+  taiga-async:
+    image: taigaio/taiga-back:latest
+    entrypoint: ["/taiga-back/docker/async_entrypoint.sh"]
+    environment: *default-back-environment
+    volumes: *default-back-volumes
+    networks:
+      - taiga
+    depends_on:
+      taiga-db:
+        condition: service_healthy
+      taiga-events-rabbitmq:
+        condition: service_started
+      taiga-async-rabbitmq:
+        condition: service_started
+
+  taiga-async-rabbitmq:
+    image: rabbitmq:3.8-management-alpine
+    environment:
+      RABBITMQ_ERLANG_COOKIE: "${RABBITMQ_ERLANG_COOKIE}"
+      RABBITMQ_DEFAULT_USER: "${RABBITMQ_USER}"
+      RABBITMQ_DEFAULT_PASS: "${RABBITMQ_PASS}"
+      RABBITMQ_DEFAULT_VHOST: "${RABBITMQ_VHOST}"
+    hostname: "taiga-async-rabbitmq"
+    volumes:
+      - taiga-async-rabbitmq-data:/var/lib/rabbitmq
+    networks:
+      - taiga
+
+  taiga-front:
+    image: taigaio/taiga-front:latest
+    environment:
+      TAIGA_URL: "${TAIGA_SCHEME}://${TAIGA_DOMAIN}"
+      TAIGA_WEBSOCKETS_URL: "${WEBSOCKETS_SCHEME}://${TAIGA_DOMAIN}"
+      TAIGA_SUBPATH: "${SUBPATH}"
+    networks:
+      - taiga
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.taiga-front.rule=Host(`${TAIGA_DOMAIN}`)
+      - traefik.http.routers.taiga-front.entrypoints=web,websecure
+      - traefik.http.routers.taiga-front.tls=true
+      - traefik.http.services.taiga-front.loadbalancer.server.port=80
+
+  taiga-events:
+    image: taigaio/taiga-events:latest
+    environment:
+      RABBITMQ_USER: "${RABBITMQ_USER}"
+      RABBITMQ_PASS: "${RABBITMQ_PASS}"
+      TAIGA_SECRET_KEY: "${SECRET_KEY}"
+    networks:
+      - taiga
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.taiga-events.rule=Host(`${TAIGA_DOMAIN}`) && PathPrefix(`/events`)
+      - traefik.http.routers.taiga-events.entrypoints=web,websecure
+      - traefik.http.routers.taiga-events.tls=true
+      - traefik.http.services.taiga-events.loadbalancer.server.port=8888
+    depends_on:
+      taiga-events-rabbitmq:
+        condition: service_started
+
+  taiga-events-rabbitmq:
+    image: rabbitmq:3.8-management-alpine
+    environment:
+      RABBITMQ_ERLANG_COOKIE: "${RABBITMQ_ERLANG_COOKIE}"
+      RABBITMQ_DEFAULT_USER: "${RABBITMQ_USER}"
+      RABBITMQ_DEFAULT_PASS: "${RABBITMQ_PASS}"
+      RABBITMQ_DEFAULT_VHOST: "${RABBITMQ_VHOST}"
+    hostname: "taiga-events-rabbitmq"
+    volumes:
+      - taiga-events-rabbitmq-data:/var/lib/rabbitmq
+    networks:
+      - taiga
+
+  taiga-protected:
+    image: taigaio/taiga-protected:latest
+    environment:
+      MAX_AGE: "${ATTACHMENTS_MAX_AGE}"
+      SECRET_KEY: "${SECRET_KEY}"
+    networks:
+      - taiga
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.taiga-protected.rule=Host(`${TAIGA_DOMAIN}`) && PathPrefix(`/protected`)
+      - traefik.http.routers.taiga-protected.entrypoints=web,websecure
+      - traefik.http.routers.taiga-protected.tls=true
+      - traefik.http.services.taiga-protected.loadbalancer.server.port=8003
 
 volumes:
   taiga-static-data:
   taiga-media-data:
   taiga-db-data:
+  taiga-async-rabbitmq-data:
+  taiga-events-rabbitmq-data:
+
+networks:
+  taiga:
