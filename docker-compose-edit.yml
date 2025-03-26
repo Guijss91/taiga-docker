@@ -1,0 +1,72 @@
+version: "3.5"
+
+x-environment:
+  &default-back-environment
+  POSTGRES_DB: "taiga"
+  POSTGRES_USER: "${POSTGRES_USER}"                # Variável de ambiente para usuário PostgreSQL
+  POSTGRES_PASSWORD: "${POSTGRES_PASSWORD}"        # Variável de ambiente para senha PostgreSQL
+  POSTGRES_HOST: "taiga-db"
+
+  TAIGA_SECRET_KEY: "${SECRET_KEY}"                # Chave secreta para Taiga
+  TAIGA_SITES_SCHEME: "${TAIGA_SCHEME}"            # Esquema do site (http ou https)
+  TAIGA_SITES_DOMAIN: "${TAIGA_DOMAIN}"            # Domínio do site (ex: localhost)
+
+  EMAIL_BACKEND: "django.core.mail.backends.${EMAIL_BACKEND}.EmailBackend"  # Backend de email
+  DEFAULT_FROM_EMAIL: "${EMAIL_DEFAULT_FROM}"      # Email padrão
+  EMAIL_USE_TLS: "${EMAIL_USE_TLS}"                # Usar TLS?
+  EMAIL_USE_SSL: "${EMAIL_USE_SSL}"                # Usar SSL?
+  EMAIL_HOST: "${EMAIL_HOST}"                      # Servidor de email
+  EMAIL_PORT: "${EMAIL_PORT}"                      # Porta do servidor de email
+  EMAIL_HOST_USER: "${EMAIL_HOST_USER}"            # Usuário do servidor de email
+  EMAIL_HOST_PASSWORD: "${EMAIL_HOST_PASSWORD}"    # Senha do servidor de email
+
+  CELERY_ENABLED: "False"                          # Desabilitar Celery, pois não estamos utilizando RabbitMQ
+
+x-volumes:
+  &default-back-volumes
+  - taiga-static-data:/taiga-back/static
+  - taiga-media-data:/taiga-back/media
+
+services:
+  taiga-back:
+    image: taigaio/taiga-back:latest
+    container_name: taiga-back
+    environment: *default-back-environment
+    depends_on:
+      - taiga-db
+    entrypoint: "python manage.py"
+    volumes: *default-back-volumes
+    networks:
+      - taiga
+
+  taiga-frontend:
+    image: taigaio/taiga-frontend:latest
+    container_name: taiga-frontend
+    environment:
+      - TAIGA_BACKEND_URL=http://$(TAIGA_DOMAIN):9000/api/v1/   # URL do backend Taiga
+    depends_on:
+      - taiga-back
+    ports:
+      - "8080:80"
+    networks:
+      - taiga
+
+  taiga-db:
+    image: postgres:13
+    container_name: taiga-db
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=taiga
+    volumes:
+      - taiga-db-data:/var/lib/postgresql/data
+    networks:
+      - taiga
+
+networks:
+  taiga:
+
+volumes:
+  taiga-static-data:
+  taiga-media-data:
+  taiga-db-data:
