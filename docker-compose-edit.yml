@@ -1,4 +1,4 @@
-version: "3.5"
+# Removida a linha version obsoleta
 
 x-environment:
   &default-back-environment
@@ -53,7 +53,7 @@ services:
       - taiga
     labels:
       - traefik.enable=true
-      - traefik.http.routers.taiga-back.rule=Host(`${TAIGA_DOMAIN}`) && PathPrefix(`/api`, `/admin`, `/static`, `/media`)
+      - traefik.http.routers.taiga-back.rule=Host(`${TAIGA_DOMAIN}`) && (PathPrefix(`/api`) || PathPrefix(`/admin`) || PathPrefix(`/static`) || PathPrefix(`/media`))
       - traefik.http.routers.taiga-back.entrypoints=web,websecure
       - traefik.http.routers.taiga-back.tls=true
       - traefik.http.services.taiga-back.loadbalancer.server.port=8000
